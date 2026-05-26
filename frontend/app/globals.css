@@ -1,26 +1,35 @@
-@import "tailwindcss";
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --canvas: #faf9f5;
+  --surface-card: #efe9de;
+  --surface-soft: #f5f0e8;
+  --surface-dark: #181715;
+  --surface-dark-elevated: #252320;
+  --hairline: #e6dfd8;
+  --primary: #cc785c;
+  --primary-active: #a9583e;
+  --ink: #141413;
+  --body: #3d3d3a;
+  --muted: #6c6a64;
+  --muted-soft: #8e8b82;
+  --on-dark: #faf9f5;
+  --on-dark-soft: #a09d96;
+  --success: #5db872;
+  --error: #c64545;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: "Inter", sans-serif;
 }
