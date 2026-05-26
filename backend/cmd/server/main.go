@@ -11,6 +11,7 @@ import (
 	"github.com/tarunbtw/formsy/internal/db"
 	"github.com/tarunbtw/formsy/internal/handler"
 	"time"
+	"github.com/tarunbtw/formsy/internal/middleware"
 )
 
 func main() {
@@ -42,10 +43,13 @@ func main() {
 	})
 
 	app.Post("/s/:project_id", submitLimiter, handler.Submit)
-	app.Get("/health", func(c *fiber.Ctx) error {
-		return c.SendString("ok")
-	})
-
+    app.Get("/health", func(c *fiber.Ctx) error { return c.SendString("ok") })
+	// protected routes
+    api := app.Group("/api", middleware.RequireAuth)
+	api.Post("/projects", handler.CreateProject)
+	api.Get("/projects", handler.ListProjects)
+	api.Delete("/projects/:project_id", handler.DeleteProject)
+	api.Patch("/projects/:project_id/schema", handler.UpdateProjectSchema)
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
