@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
