@@ -1,0 +1,24 @@
+{
+  "name": "@formsy/init",
+  "version": "1.0.0",
+  "description": "Scaffold a Formsy form component for your framework",
+  "bin": {
+    "@formsy/init": "./dist/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.15.4",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

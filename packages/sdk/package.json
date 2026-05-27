@@ -1,0 +1,14 @@
+{
+  "name": "@formsy/sdk",
+  "version": "1.0.0",
+  "description": "Vanilla JS CDN bundle for Formsy — submit forms from any site",
+  "main": "./dist/formsy.min.js",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.5",
+    "typescript": "^5.4.5"
+  }
+}
