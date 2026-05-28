@@ -1,75 +1,63 @@
 import { Hono } from 'hono'
-import { createHmac } from 'crypto'
+import { Polar } from '@polar-sh/sdk'
+import { createHmac, timingSafeEqual } from 'crypto'
 import { db, users } from '../../../../packages/db/src/index.ts'
 import { eq } from 'drizzle-orm'
 import { authMiddleware } from '../middleware/auth'
 
 export const billingRouter = new Hono()
 
-const PLAN_VARIANT_MAP: Record<string, string | undefined> = {
-  starter: process.env.LS_VARIANT_STARTER,
-  pro: process.env.LS_VARIANT_PRO,
-  max: process.env.LS_VARIANT_MAX,
+function getPolar() {
+  const token = process.env.POLAR_ACCESS_TOKEN
+  if (!token) throw new Error('POLAR_ACCESS_TOKEN is required')
+  return new Polar({ accessToken: token })
 }
 
-function getLSApiKey() {
-  const key = process.env.LEMONSQUEEZY_API_KEY
-  if (!key) throw new Error('LEMONSQUEEZY_API_KEY is required')
-  return key
+const PRODUCT_MAP: Record<string, string | undefined> = {
+  starter: process.env.POLAR_PRODUCT_ID_STARTER,
+  pro:     process.env.POLAR_PRODUCT_ID_PRO,
+  max:     process.env.POLAR_PRODUCT_ID_MAX,
 }
 
-// ─── GET /api/billing/checkout?plan=starter|pro|max ──────────────────────────
+function resolvePlan(productId: string): string {
+  for (const [plan, id] of Object.entries(PRODUCT_MAP)) {
+    if (id && id === productId) return plan
+  }
+  return 'free'
+}
+
+// ─── GET /api/billing/checkout?plan=starter|pro|max ───────────────────────────
 
 billingRouter.get('/checkout', authMiddleware, async (c) => {
   const plan = c.req.query('plan')
   const { userId } = c.get('user')
 
-  if (!plan || !PLAN_VARIANT_MAP[plan]) {
+  if (!plan || !PRODUCT_MAP[plan]) {
     return c.json({ error: 'invalid_plan' }, 400)
   }
-
-  const variantId = PLAN_VARIANT_MAP[plan]!
-  const storeId = process.env.LEMONSQUEEZY_STORE_ID
-  if (!storeId) return c.json({ error: 'billing_not_configured' }, 503)
 
   const [user] = await db.select().from(users).where(eq(users.id, userId))
   if (!user) return c.json({ error: 'user_not_found' }, 404)
 
-  const res = await fetch('https://api.lemonsqueezy.com/v1/checkouts', {
-    method: 'POST',
-    headers: {
-      Accept: 'application/vnd.api+json',
-      'Content-Type': 'application/vnd.api+json',
-      Authorization: `Bearer ${getLSApiKey()}`,
-    },
-    body: JSON.stringify({
-      data: {
-        type: 'checkouts',
-        attributes: {
-          checkout_data: {
-            email: user.email,
-            custom: { user_id: user.id },
-          },
-        },
-        relationships: {
-          store: { data: { type: 'stores', id: storeId } },
-          variant: { data: { type: 'variants', id: variantId } },
-        },
-      },
-    }),
-  })
+  const productId = PRODUCT_MAP[plan]!
 
-  if (!res.ok) {
-    const err = await res.json()
+  try {
+    const polar = getPolar()
+    const checkout = await polar.checkouts.create({
+      productId,
+      customerEmail: user.email ?? undefined,
+      metadata: { user_id: userId },
+      successUrl: `${process.env.FRONTEND_URL ?? 'http://localhost:5173'}/dashboard/settings?upgraded=true`,
+    })
+
+    return c.json({ checkoutUrl: checkout.url })
+  } catch (err) {
     console.error('[BILLING] Checkout error:', err)
     return c.json({ error: 'checkout_failed' }, 502)
   }
-
-  const data = (await res.json()) as { data: { attributes: { url: string } } }
-  return c.json({ checkoutUrl: data.data.attributes.url })
 })
 
-// ─── GET /api/billing/portal ─────────────────────────────────────────────────
+// ─── GET /api/billing/portal ──────────────────────────────────────────────────
 
 billingRouter.get('/portal', authMiddleware, async (c) => {
   const { userId } = c.get('user')
@@ -79,114 +67,110 @@ billingRouter.get('/portal', authMiddleware, async (c) => {
     return c.json({ error: 'no_subscription' }, 404)
   }
 
-  const res = await fetch(
-    `https://api.lemonsqueezy.com/v1/customers/${user.lsCustomerId}/portal`,
-    {
-      headers: {
-        Accept: 'application/vnd.api+json',
-        Authorization: `Bearer ${getLSApiKey()}`,
-      },
-    }
-  )
+  try {
+    const polar = getPolar()
+    const session = await polar.customerSessions.create({
+      customerId: user.lsCustomerId,
+    })
 
-  if (!res.ok) {
+    return c.json({ portalUrl: session.customerPortalUrl })
+  } catch (err) {
+    console.error('[BILLING] Portal error:', err)
     return c.json({ error: 'portal_failed' }, 502)
   }
-
-  const data = (await res.json()) as { data: { attributes: { url: string } } }
-  return c.json({ portalUrl: data.data.attributes.url })
 })
 
 // ─── POST /api/billing/webhook ────────────────────────────────────────────────
-// No auth — verify HMAC signature from LemonSqueezy
+// No auth — verify HMAC-SHA256 signature from Polar
 
 billingRouter.post('/webhook', async (c) => {
-  const webhookSecret = process.env.LEMONSQUEEZY_WEBHOOK_SECRET
+  const webhookSecret = process.env.POLAR_WEBHOOK_SECRET
   if (!webhookSecret) {
     return c.json({ error: 'webhook_not_configured' }, 503)
   }
 
-  const sig = c.req.header('X-Signature')
   const rawBody = await c.req.text()
+  const signature = c.req.header('webhook-signature') ?? ''
 
-  if (!sig) {
+  if (!signature) {
     return c.json({ error: 'missing_signature' }, 401)
   }
 
-  // Verify HMAC-SHA256
+  // Verify HMAC-SHA256 — timing-safe comparison
   const expected = createHmac('sha256', webhookSecret)
     .update(rawBody)
     .digest('hex')
 
-  if (sig !== expected) {
+  const sigBuffer = Buffer.from(signature)
+  const expBuffer = Buffer.from(expected)
+
+  if (
+    sigBuffer.length !== expBuffer.length ||
+    !timingSafeEqual(sigBuffer, expBuffer)
+  ) {
     console.warn('[BILLING] Webhook signature mismatch')
     return c.json({ error: 'invalid_signature' }, 401)
   }
 
-  let payload: {
-    meta: { event_name: string; custom_data?: { user_id?: string } }
+  let event: {
+    type: string
     data: {
-      attributes: {
-        customer_id?: string
-        first_subscription_item?: { subscription_id?: number }
-        status?: string
-        user_email?: string
-      }
+      id: string
+      customerId?: string
+      productId?: string
+      metadata?: { user_id?: string }
     }
   }
 
   try {
-    payload = JSON.parse(rawBody)
+    event = JSON.parse(rawBody)
   } catch {
     return c.json({ error: 'invalid_json' }, 400)
   }
 
-  const eventName = payload.meta.event_name
-  const userId = payload.meta.custom_data?.user_id
-  const attrs = payload.data.attributes
+  console.log(`[BILLING] Polar webhook: ${event.type}`)
 
-  // Determine plan from event
-  const planMap: Record<string, string> = {
-    [process.env.LS_VARIANT_STARTER ?? '']: 'starter',
-    [process.env.LS_VARIANT_PRO ?? '']: 'pro',
-    [process.env.LS_VARIANT_MAX ?? '']: 'max',
-  }
+  const meta = event.data.metadata ?? {}
+  const userId = meta.user_id
 
-  console.log(`[BILLING] Webhook: ${eventName} for user ${userId}`)
-
-  switch (eventName) {
-    case 'subscription_created': {
+  switch (event.type) {
+    case 'subscription.created':
+    case 'subscription.updated': {
       if (!userId) break
-      const subId = String(attrs.first_subscription_item?.subscription_id ?? '')
-      const customerId = String(attrs.customer_id ?? '')
-      // Determine plan from variant — look it up if needed; default to 'starter'
-      const plan = 'starter' // Will be refined by subscription_updated
+
+      const planName = event.data.productId
+        ? resolvePlan(event.data.productId)
+        : 'starter'
+
       await db
         .update(users)
-        .set({ plan, lsCustomerId: customerId, lsSubscriptionId: subId })
+        .set({
+          plan: planName,
+          lsCustomerId: event.data.customerId ?? null,
+          lsSubscriptionId: event.data.id,
+        })
         .where(eq(users.id, userId))
+
+      console.log(`[BILLING] ✓ Set user ${userId} plan → ${planName}`)
       break
     }
-    case 'subscription_updated': {
+
+    case 'subscription.canceled':
+    case 'subscription.revoked': {
       if (!userId) break
-      const status = attrs.status ?? ''
-      // If cancelled/expired, revert to free
-      if (['cancelled', 'expired', 'unpaid'].includes(status)) {
-        await db
-          .update(users)
-          .set({ plan: 'free' })
-          .where(eq(users.id, userId))
-      }
+
+      await db
+        .update(users)
+        .set({ plan: 'free' })
+        .where(eq(users.id, userId))
+
+      console.log(`[BILLING] ✓ Reverted user ${userId} → free`)
       break
     }
-    case 'subscription_cancelled': {
-      if (!userId) break
-      await db.update(users).set({ plan: 'free' }).where(eq(users.id, userId))
-      break
-    }
+
     default:
-      console.log(`[BILLING] Unhandled event: ${eventName}`)
+      console.log(`[BILLING] Unhandled Polar event: ${event.type}`)
   }
 
-  return c.json({ ok: true })
+  return c.json({ received: true })
 })

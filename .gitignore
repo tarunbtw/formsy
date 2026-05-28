@@ -7,3 +7,5 @@ dist/
 *.log
 .DS_Store
 Thumbs.db
+build-plan.md
+formsy_polar_migration.md
